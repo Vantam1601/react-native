@@ -5,11 +5,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+
 plugins {
     id("com.android.library")
     id("com.facebook.react.codegen")
     id("maven")
     id("de.undercouch.download")
+    id("maven-publish")
 }
 
 import java.nio.file.Paths
@@ -453,6 +455,7 @@ dependencies {
     api("com.squareup.okhttp3:okhttp-urlconnection:${OKHTTP_VERSION}")
     api("com.squareup.okio:okio:1.17.5")
     api("com.facebook.fbjni:fbjni-java-only:0.0.3")
+    implementation 'commons-io:commons-io:2.11.0'
     extractHeaders("com.facebook.fbjni:fbjni:0.0.2:headers")
     extractJNI("com.facebook.fbjni:fbjni:0.0.2")
 
@@ -476,4 +479,22 @@ react {
     jsRootDir = file("../Libraries")
     reactNativeRootDir = file("$projectDir/..")
     useJavaGenerator = System.getenv("USE_CODEGEN_JAVAPOET") ?: false
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            maven(MavenPublication) {
+                groupId 'com.facebook.react'
+                artifactId 'react-native'
+                version '0.64.4'
+
+                from components.release
+            }
+        }
+
+        repositories {
+            mavenLocal()
+        }
+    }
 }

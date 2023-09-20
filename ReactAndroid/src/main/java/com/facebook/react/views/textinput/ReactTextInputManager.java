@@ -54,6 +54,7 @@ import com.facebook.react.uimanager.Spacing;
 import com.facebook.react.uimanager.StateWrapper;
 import com.facebook.react.uimanager.ThemedReactContext;
 import com.facebook.react.uimanager.UIManagerHelper;
+import com.facebook.react.uimanager.UIManagerModule;
 import com.facebook.react.uimanager.ViewDefaults;
 import com.facebook.react.uimanager.ViewProps;
 import com.facebook.react.uimanager.annotations.ReactProp;
@@ -179,6 +180,8 @@ public class ReactTextInputManager extends BaseViewManager<ReactEditText, Layout
         .build();
   }
 
+
+
   @Nullable
   @Override
   public Map<String, Object> getExportedCustomDirectEventTypeConstants() {
@@ -186,6 +189,8 @@ public class ReactTextInputManager extends BaseViewManager<ReactEditText, Layout
         .put(
             ScrollEventType.getJSEventName(ScrollEventType.SCROLL),
             MapBuilder.of("registrationName", "onScroll"))
+        .put("mimeInput",
+             MapBuilder.of("registrationName", "onMimeInput"))
         .build();
   }
 
@@ -299,6 +304,15 @@ public class ReactTextInputManager extends BaseViewManager<ReactEditText, Layout
   @ReactProp(name = ViewProps.MAX_FONT_SIZE_MULTIPLIER, defaultFloat = Float.NaN)
   public void setMaxFontSizeMultiplier(ReactEditText view, float maxFontSizeMultiplier) {
     view.setMaxFontSizeMultiplier(maxFontSizeMultiplier);
+  }
+
+  @ReactProp(name = "onMimeInput", defaultBoolean = false)
+  public void setMimeInput(ReactEditText view, boolean onMimeInput) {
+    if (onMimeInput) {
+      view.setMimeInputWatcher(new ReactMimeInputWatcher(view));
+    } else {
+      view.setMimeInputWatcher(null);
+    }
   }
 
   @ReactProp(name = ViewProps.FONT_WEIGHT)
@@ -1151,6 +1165,32 @@ public class ReactTextInputManager extends BaseViewManager<ReactEditText, Layout
     }
   }
 
+  private class ReactMimeInputWatcher implements MimeInputWatcher {
+
+    private ReactEditText mReactEditText;
+    private EventDispatcher mEventDispatcher;
+
+    public ReactMimeInputWatcher(ReactEditText editText) {
+      mReactEditText = editText;
+      ReactContext reactContext = (ReactContext) editText.getContext();
+      mEventDispatcher = reactContext.getNativeModule(UIManagerModule.class).getEventDispatcher();
+    }
+
+    @Override
+    public void onMimeInput(String uri, String linkUri, String data, String mime) {
+      if (uri != null) {
+        ReactTextInputMimeEvent event = new ReactTextInputMimeEvent(
+          mReactEditText.getId(),
+          uri,
+          linkUri,
+          data,
+          mime);
+
+        mEventDispatcher.dispatchEvent(event);
+      }
+    }
+  }
+
   @Override
   public @Nullable Map getExportedViewConstants() {
     return MapBuilder.of(
@@ -1220,3 +1260,5 @@ public class ReactTextInputManager extends BaseViewManager<ReactEditText, Layout
         containsMultipleFragments);
   }
 }
+
+

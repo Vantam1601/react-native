@@ -10,10 +10,12 @@ package com.facebook.react.views.textinput;
 import static com.facebook.react.uimanager.UIManagerHelper.getReactContext;
 import static com.facebook.react.views.text.TextAttributeProps.UNSET;
 
+import android.content.ClipDescription;
 import android.content.Context;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
@@ -25,6 +27,8 @@ import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.text.method.KeyListener;
 import android.text.method.QwertyKeyListener;
+import android.util.Base64;
+import android.util.Base64OutputStream;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -34,10 +38,16 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.Toast;
+
 import androidx.annotation.Nullable;
 import androidx.appcompat.widget.AppCompatEditText;
+import androidx.core.os.BuildCompat;
 import androidx.core.view.AccessibilityDelegateCompat;
 import androidx.core.view.ViewCompat;
+import androidx.core.view.inputmethod.EditorInfoCompat;
+import androidx.core.view.inputmethod.InputConnectionCompat;
+
 import com.facebook.common.logging.FLog;
 import com.facebook.infer.annotation.Assertions;
 import com.facebook.react.bridge.ReactContext;
@@ -56,6 +66,15 @@ import com.facebook.react.views.text.TextAttributes;
 import com.facebook.react.views.text.TextInlineImageSpan;
 import com.facebook.react.views.text.TextLayoutManager;
 import com.facebook.react.views.view.ReactViewBackgroundManager;
+
+import org.apache.commons.io.IOUtils;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -111,6 +130,7 @@ public class ReactEditText extends AppCompatEditText
   private boolean mAutoFocus = false;
   private boolean mDidAttachToWindow = false;
 
+  private @Nullable MimeInputWatcher mMimeInputWatcher;
   private ReactViewBackgroundManager mReactBackgroundManager;
 
   private final FabricViewStateManager mFabricViewStateManager = new FabricViewStateManager();
@@ -135,6 +155,7 @@ public class ReactEditText extends AppCompatEditText
     mIsSettingTextFromJS = false;
     mBlurOnSubmit = null;
     mDisableFullscreen = false;
+    mMimeInputWatcher = null;
     mListeners = null;
     mTextWatcherDelegator = null;
     mStagedInputType = getInputType();
@@ -244,7 +265,81 @@ public class ReactEditText extends AppCompatEditText
   @Override
   public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
     ReactContext reactContext = getReactContext(this);
-    InputConnection inputConnection = super.onCreateInputConnection(outAttrs);
+//    InputConnection inputConnection = super.onCreateInputConnection(outAttrs);
+
+    InputConnection ic = super.onCreateInputConnection(outAttrs);
+
+    EditorInfoCompat.setContentMimeTypes(
+      outAttrs,
+      new String [] { "image/png", "image/gif", "image/jpg", "image/jpeg", "image/webp" }
+    );
+
+    final InputConnectionCompat.OnCommitContentListener callback = (inputContentInfo, flags, opts) -> {
+      // read and display inputContentInfo asynchronously
+      if (BuildCompat.isAtLeastNMR1() &&
+        (flags & InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION) != 0) {
+        try {
+          inputContentInfo.requestPermission();
+        }
+        catch (Exception e) {
+          return false;
+        }
+      }
+
+      // Avoid loading the image into memory if its not going to be used
+      if (mMimeInputWatcher == null) {
+        return false;
+      }
+
+      String uri = null;
+      String linkUri = null;
+      String mime = null;
+      String data = null;
+
+      Uri contentUri = inputContentInfo.getContentUri();
+      if (contentUri != null) {
+        uri = contentUri.toString();
+
+        // try {
+        //   uri = saveFile(reactContext, contentUri).toString();
+        // } catch (IOException e) {
+        //   Toast.makeText(reactContext,"IOException saveFile",Toast.LENGTH_SHORT).show();
+        //   e.printStackTrace();
+        // }
+
+        // Load the data, we have to do this now otherwise we cannot release permissions
+        try {
+          data = loadFile(reactContext, contentUri);
+        }
+        catch(IOException e) {
+          inputContentInfo.releasePermission();
+          return false;
+        }
+      }
+
+      // Get the optional uri to web link
+      Uri link = inputContentInfo.getLinkUri();
+      if (link != null) {
+        linkUri = link.toString();
+      }
+
+      ClipDescription description = inputContentInfo.getDescription();
+      if (description != null && description.getMimeTypeCount() > 0) {
+        mime = description.getMimeType(0);
+      }
+
+      if (mMimeInputWatcher != null) {
+        mMimeInputWatcher.onMimeInput(uri, linkUri, data, mime);
+      }
+
+      // Releasing the permission means that the content at the uri is probably no longer accessible
+      inputContentInfo.releasePermission();
+
+      return true;
+    };
+
+    InputConnection inputConnection = ic != null ? InputConnectionCompat.createWrapper(ic, outAttrs, callback) : ic;
+
     if (inputConnection != null && mOnKeyPress) {
       inputConnection =
           new ReactEditTextInputConnectionWrapper(inputConnection, reactContext, this);
@@ -257,11 +352,54 @@ public class ReactEditText extends AppCompatEditText
     return inputConnection;
   }
 
+  public void setMimeInputWatcher(MimeInputWatcher mimeInputWatcher) {
+    mMimeInputWatcher = mimeInputWatcher;
+  }
+
   @Override
   public void clearFocus() {
     setFocusableInTouchMode(false);
     super.clearFocus();
     hideSoftKeyboard();
+  }
+
+
+  private static Uri saveFile(Context context, Uri contentUri) throws IOException {
+    File cacheDir = new File(context.getCacheDir(), "MediaInputCache");
+    cacheDir.deleteOnExit();
+    cacheDir.mkdir(); // Create if not existent
+    File target = new File(cacheDir, contentUri.getLastPathSegment());
+    InputStream inputStream = context.getContentResolver().openInputStream(contentUri);
+    if (inputStream == null) {
+      throw new IOException("Failed to open input stream for content URI: " + contentUri.toString());
+    }
+    OutputStream outputStream = new FileOutputStream(target);
+    IOUtils.copy(inputStream, outputStream);
+
+    Toast.makeText(context,"saveFile",Toast.LENGTH_SHORT).show();
+
+    return Uri.fromFile(target);
+  }
+
+  private static String loadFile(Context context, Uri contentUri) throws IOException {
+    InputStream inputStream = context.getContentResolver().openInputStream(contentUri);
+
+    byte[] buffer = new byte[8192];
+    int bytesRead;
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    Base64OutputStream output64 = new Base64OutputStream(output, Base64.DEFAULT);
+
+    try {
+      while ((bytesRead = inputStream.read(buffer)) != -1) {
+        output64.write(buffer, 0, bytesRead);
+      }
+    } catch (IOException e) {
+      e.printStackTrace();
+    }
+
+    output64.close();
+
+    return output.toString();
   }
 
   @Override
