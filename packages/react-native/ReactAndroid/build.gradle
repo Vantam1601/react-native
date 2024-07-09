@@ -794,7 +794,6 @@ react {
     jsRootDir = file("../Libraries")
 }
 
-// For build from source, we need to override the privateReact extension.
 // This is neeeded as the build-from-source won't have a com.android.application
 // module to apply the plugin to, so it's codegenDir and reactNativeDir won't be evaluated.
 if (rootProject.name == "react-native-build-from-source") {
